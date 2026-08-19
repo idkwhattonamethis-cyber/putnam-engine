@@ -1,0 +1,12 @@
+node_modules/
+dist/
+dev-dist/
+.DS_Store
+*.local
+
+# Vercel
+.vercel/
+
+# Artifacts of the old manual-deploy method — regenerable, not source
+deploy/
+deploy_manifest2.json

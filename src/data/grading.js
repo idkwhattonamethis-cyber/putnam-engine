@@ -1,0 +1,6 @@
+/* Adversarial self-grading protocol (rubric, gap log, calibration). */
+
+export const RUBRIC = "GRADE LIKE A HOSTILE PUTNAM READER (0–10, no middle): 10 = airtight, every step justified. 9 = complete, one trivial gap. 2 = right idea, real gap in the argument. 1 = correct start, no follow-through. 0 = nothing usable. Most 'basically right' proofs are a 1 or 2 — find the gap you slid past.";
+export const GRADE_STEP = "Write the FULL proof solo. THEN open the official solution and grade against the rubric, hunting your own gaps line-by-line: is every step justified, would a hostile reader accept this line? Log the SCORE, not just right/wrong.";
+export const GAP_LOG = "GAP LOG (separate from error log): the error log tracks wrong answers; the gap log tracks RIGHT IDEAS you under-justified — the thing that actually costs Putnam points. One entry per gap: what step, why a grader rejects it, the fix.";
+export const CALIB = "CALIBRATION: before opening the official solution, write your PREDICTED score. After grading, record the delta. That delta — self-grade minus real standard — is the single most important number in this whole system. Shrinking it to ~0 is what makes self-grading trustworthy until you can afford a coach.";

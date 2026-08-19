@@ -1,0 +1,22 @@
+@import "tailwindcss";
+
+/* Minimal reset — the app fully styles itself (palette, fonts, layout live in App.jsx).
+   The Vite scaffold's boilerplate here set h1/h2 colors from a prefers-color-scheme
+   media query and constrained #root, both of which fought the in-app theming. */
+* {
+  box-sizing: border-box;
+}
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+}
+#root {
+  min-height: 100svh;
+}
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
