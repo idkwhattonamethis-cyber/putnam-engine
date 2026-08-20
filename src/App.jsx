@@ -9,6 +9,7 @@ import { TRACKS, OUTREACH, COMPETITIONS_SORTED, CREDENTIALS, COMP_SKILLS } from 
 import { slotsFor, buildDay } from "./lib/slots.js";
 import { LIGHT, DARK, readableOn, mono, beep } from "./lib/theme.js";
 import { buildAllIcs, buildWeeksIcs, buildMilestonesIcs, buildDailyIcs, downloadIcs } from "./lib/ics.js";
+import { getSyncCode, setSyncCode, pullCloud, pushCloud } from "./lib/cloudSync.js";
 
 export default function App() {
   const [tab, setTab] = useState("today");
@@ -32,13 +33,35 @@ export default function App() {
   );
   const C = theme === "dark" ? DARK : LIGHT;
   const rowHover = theme === "dark" ? "hover:bg-white/[0.05]" : "hover:bg-black/[0.03]";
+  const [syncCode, setSyncCodeState] = useState("");
+  const [syncStatus, setSyncStatus] = useState("");
+  const [joinInput, setJoinInput] = useState("");
 
   useEffect(() => {
     (async () => {
-      try { const r = await window.storage.get("campaign-state"); if (r) { const v = JSON.parse(r.value); setDone(v.done || {}); setBlocks(v.blocks || {}); setBlockHist(v.blockHist || {}); setSimLog(v.simLog || {}); } } catch (e) {}
-      try { const l = await window.storage.get("lift-log"); if (l) setLiftLog(JSON.parse(l.value)); } catch (e) {}
+      let localState = null, localLift = {};
+      try { const r = await window.storage.get("campaign-state"); if (r) { localState = JSON.parse(r.value); setDone(localState.done || {}); setBlocks(localState.blocks || {}); setBlockHist(localState.blockHist || {}); setSimLog(localState.simLog || {}); } } catch (e) {}
+      try { const l = await window.storage.get("lift-log"); if (l) { localLift = JSON.parse(l.value); setLiftLog(localLift); } } catch (e) {}
       try { const t = await window.storage.get("theme"); if (t && (t.value === "dark" || t.value === "light")) setTheme(t.value); } catch (e) {}
       setLoaded(true);
+
+      // cross-device sync: whole-blob last-write-wins, keyed by a private share code
+      const code = getSyncCode();
+      setSyncCodeState(code);
+      setSyncStatus("checking…");
+      const cloud = await pullCloud(code);
+      const localUpdatedAt = (localState && localState.updatedAt) || 0;
+      if (cloud && cloud.updatedAt > localUpdatedAt) {
+        setDone(cloud.done || {}); setBlocks(cloud.blocks || {}); setBlockHist(cloud.blockHist || {}); setSimLog(cloud.simLog || {}); setLiftLog(cloud.liftLog || {});
+        window.storage.set("campaign-state", JSON.stringify({ done: cloud.done || {}, blocks: cloud.blocks || {}, blockHist: cloud.blockHist || {}, simLog: cloud.simLog || {}, updatedAt: cloud.updatedAt }));
+        window.storage.set("lift-log", JSON.stringify(cloud.liftLog || {}));
+        setSyncStatus("pulled newer data from another device");
+      } else if (localState) {
+        pushCloud(code, { done: localState.done || {}, blocks: localState.blocks || {}, blockHist: localState.blockHist || {}, simLog: localState.simLog || {}, liftLog: localLift, updatedAt: localUpdatedAt || Date.now() });
+        setSyncStatus("synced");
+      } else {
+        setSyncStatus("synced");
+      }
     })();
     const t = setInterval(() => setNow(new Date()), 30000);
     const onKey = (e) => { if (e.key === "ArrowLeft") setOffset((o) => o - 1); if (e.key === "ArrowRight") setOffset((o) => o + 1); };
@@ -71,7 +94,10 @@ export default function App() {
     const newHist = { ...(bh !== undefined ? bh : blockHist), ...histAdd };
     const pruned = {}; recent.forEach((k) => (pruned[k] = b[k]));
     if (Object.keys(histAdd).length) setBlockHist(newHist);
-    await window.storage.set("campaign-state", JSON.stringify({ done: d, blocks: pruned, blockHist: newHist, simLog: sl !== undefined ? sl : simLog }));
+    const finalSimLog = sl !== undefined ? sl : simLog;
+    const updatedAt = Date.now();
+    await window.storage.set("campaign-state", JSON.stringify({ done: d, blocks: pruned, blockHist: newHist, simLog: finalSimLog, updatedAt }));
+    if (syncCode) pushCloud(syncCode, { done: d, blocks: pruned, blockHist: newHist, simLog: finalSimLog, liftLog, updatedAt });
   } catch (e) {} };
 
   const today = useMemo(() => { const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() + offset); return d; }, [offset]);
@@ -95,7 +121,30 @@ export default function App() {
   const currentIdx = offset === 0 ? sched.reduce((acc, r, i) => (parseInt(r[0].slice(0, 2)) * 60 + parseInt(r[0].slice(3)) <= nowMin ? i : acc), -1) : -1;
   const toggleDay = () => { const d = { ...done }; if (d[key]) delete d[key]; else d[key] = true; setDone(d); save(d, blocks); };
   const toggleBlock = (i) => { const b = { ...blocks }; const arr = new Set(b[key] || []); arr.has(i) ? arr.delete(i) : arr.add(i); b[key] = [...arr]; setBlocks(b); save(done, b); };
-  const saveLifts = async (log) => { try { await window.storage.set("lift-log", JSON.stringify(log)); } catch (e) {} };
+  const saveLifts = async (log) => { try {
+    const updatedAt = Date.now();
+    await window.storage.set("lift-log", JSON.stringify(log));
+    await window.storage.set("campaign-state", JSON.stringify({ done, blocks, blockHist, simLog, updatedAt }));
+    if (syncCode) pushCloud(syncCode, { done, blocks, blockHist, simLog, liftLog: log, updatedAt });
+  } catch (e) {} };
+  const joinSync = async (code) => {
+    const clean = setSyncCode(code);
+    if (!clean) return;
+    setSyncCodeState(clean);
+    setSyncStatus("joining…");
+    const cloud = await pullCloud(clean);
+    if (cloud && cloud.updatedAt) {
+      setDone(cloud.done || {}); setBlocks(cloud.blocks || {}); setBlockHist(cloud.blockHist || {}); setSimLog(cloud.simLog || {}); setLiftLog(cloud.liftLog || {});
+      await window.storage.set("campaign-state", JSON.stringify({ done: cloud.done || {}, blocks: cloud.blocks || {}, blockHist: cloud.blockHist || {}, simLog: cloud.simLog || {}, updatedAt: cloud.updatedAt }));
+      await window.storage.set("lift-log", JSON.stringify(cloud.liftLog || {}));
+      setSyncStatus("joined — pulled that device's data");
+    } else {
+      const updatedAt = Date.now();
+      pushCloud(clean, { done, blocks, blockHist, simLog, liftLog, updatedAt });
+      setSyncStatus("joined — pushed this device's data");
+    }
+    setJoinInput("");
+  };
   const logSim = () => { const p = parseFloat(simEntry.p), a = parseFloat(simEntry.a); if (isNaN(a)) return; const sl = { ...simLog, [key]: { p: isNaN(p) ? null : p, a } }; setSimLog(sl); save(done, blocks, sl); setSimEntry({ p: "", a: "" }); };
   const exportData = () => { try { const blob = new Blob([JSON.stringify({ exported: new Date().toISOString(), done, blocks, blockHist, simLog, liftLog }, null, 2)], { type: "application/json" }); const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = `campaign-backup-${key}.json`; a.click(); URL.revokeObjectURL(a.href); } catch (e) {} };
   const importFileRef = useRef(null);
@@ -586,6 +635,35 @@ export default function App() {
                 <button onClick={exportData} className="text-[11px] font-bold px-3 py-1.5 rounded-full" style={{ background: C.panel, color: C.dim, border: `1px solid ${C.line}`, fontFamily: mono }}>⤓ export backup</button>
                 <button onClick={() => importFileRef.current && importFileRef.current.click()} className="text-[11px] font-bold px-3 py-1.5 rounded-full" style={{ background: C.panel, color: C.dim, border: `1px solid ${C.line}`, fontFamily: mono }}>⤑ import backup</button>
                 <input ref={importFileRef} type="file" accept="application/json" onChange={importData} style={{ display: "none" }} />
+              </div>
+            </div>
+            <div className="rounded-2xl p-5 mt-5" style={{ background: C.panel, border: "1px solid " + C.line }}>
+              <div className="text-[11px] tracking-[0.3em] uppercase font-bold" style={{ color: C.mute, fontFamily: mono }}>Cross-device sync</div>
+              <div className="text-[11px] mt-2 leading-relaxed" style={{ color: C.mute }}>
+                This code is the whole lock — anyone who has it can read or write this data, so treat it like a share link, not a password. On another device, open this same tab and paste the code into "join a code" below. Whichever device saved most recently wins if you edit both before syncing.
+              </div>
+              <div className="flex flex-wrap items-center gap-2 mt-3">
+                <span className="text-sm font-black px-3 py-1.5 rounded-full" style={{ background: C.panel2, color: C.gold, fontFamily: mono, letterSpacing: "0.08em" }}>{syncCode || "…"}</span>
+                <button
+                  onClick={() => { if (syncCode) navigator.clipboard?.writeText(syncCode).then(() => setSyncStatus("code copied")).catch(() => {}); }}
+                  className="text-[11px] font-bold px-3 py-1.5 rounded-full"
+                  style={{ background: C.panel2, color: C.dim, border: `1px solid ${C.line}`, fontFamily: mono }}
+                >⧉ copy code</button>
+                <span className="text-[11px]" style={{ color: C.mute, fontFamily: mono }}>{syncStatus}</span>
+              </div>
+              <div className="flex flex-wrap items-center gap-2 mt-3">
+                <input
+                  value={joinInput}
+                  onChange={(e) => setJoinInput(e.target.value)}
+                  placeholder="paste a code from another device"
+                  className="text-[11px] px-3 py-1.5 rounded-full flex-1 min-w-[200px]"
+                  style={{ background: C.panel2, color: C.text, border: `1px solid ${C.line}`, fontFamily: mono }}
+                />
+                <button
+                  onClick={() => joinInput.trim() && joinSync(joinInput)}
+                  className="text-[11px] font-bold px-3 py-1.5 rounded-full"
+                  style={{ background: C.accent, color: C.onAccent, fontFamily: mono }}
+                >join code</button>
               </div>
             </div>
             <div className="grid grid-cols-2 gap-2 mt-5">
